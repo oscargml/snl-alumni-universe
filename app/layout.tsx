@@ -20,7 +20,20 @@ export const metadata: Metadata = {
     google: "S3TJp5OcNO1_IcflO0zqjELpP8aPwjWNqXOnmLG7QG4",
   },
 };
-
+openGraph: {
+  title: "SNL Alumni Universe",
+  description:
+    "Explore Saturday Night Live alumni, characters, films, shows, and creative connections.",
+  url: "https://snl-alumni-universe.vercel.app",
+  siteName: "SNL Alumni Universe",
+  type: "website",
+},
+twitter: {
+  card: "summary_large_image",
+  title: "SNL Alumni Universe",
+  description:
+    "Explore Saturday Night Live alumni, characters, films, shows, and creative connections.",
+},
 export default function RootLayout({
   children,
 }: Readonly<{
