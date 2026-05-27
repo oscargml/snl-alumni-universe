@@ -1,7 +1,20 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-
+export const metadata = {
+  title: 'SNL Alumni Universe',
+  description: 'Explore Saturday Night Live alumni connections.',
+  verification: {
+    google: 'S3TJp5OcNO1_IcflO0zqjELpP8aPwjWNqXOnmLG7QG4',
+  },
+};
+export const metadata = {
+  title: 'SNL Alumni Universe',
+  description: 'Explore Saturday Night Live alumni connections.',
+  verification: {
+    google: 'S3TJp5OcNO1_IcflO0zqjELpP8aPwjWNqXOnmLG7QG4',
+  },
+};
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
