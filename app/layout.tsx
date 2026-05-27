@@ -5,7 +5,7 @@ import "./globals.css";
   {children}
 
   <Script
-    src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"
+    src="https://www.googletagmanager.com/gtag/js?id=G-33W8GG195N"
     strategy="afterInteractive"
   />
   <Script id="google-analytics" strategy="afterInteractive">
