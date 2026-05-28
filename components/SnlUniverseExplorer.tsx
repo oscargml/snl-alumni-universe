@@ -53,11 +53,11 @@ function buildGraphLayout() {
       'link',
       forceLink<LayoutNode, (typeof layoutLinks)[number]>(layoutLinks)
         .id((node) => node.id)
-        .distance((edge) => 28 - edge.strength * 2)
-        .strength(0.55),
+        .distance((edge) => 36 - edge.strength * 2)
+        .strength(0.45),
     )
-    .force('charge', forceManyBody().strength(-55))
-    .force('collide', forceCollide<LayoutNode>().radius(6.5).strength(0.9))
+    .force('charge', forceManyBody().strength(-92))
+    .force('collide', forceCollide<LayoutNode>().radius(8.5).strength(0.95))
     .force('center', forceCenter(50, 50))
     .stop()
     .tick(320);
@@ -75,8 +75,8 @@ function buildGraphLayout() {
     layoutNodes.map((node) => [
       node.id,
       {
-        x: 8 + ((node.x - minX) / xRange) * 84,
-        y: 8 + ((node.y - minY) / yRange) * 84,
+        x: 5 + ((node.x - minX) / xRange) * 90,
+        y: 5 + ((node.y - minY) / yRange) * 90,
       },
     ]),
   );
@@ -150,8 +150,8 @@ export default function SnlUniverseExplorer() {
     <main className="min-h-screen overflow-hidden bg-[#111112] text-stone-100">
       <section className="relative min-h-[92vh] border-b border-white/10 px-4 py-5 sm:px-6 lg:px-8">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(222,49,49,0.22),transparent_28%),linear-gradient(135deg,#111112_0%,#171717_42%,#2b1711_100%)]" />
-        <div className="relative mx-auto grid max-w-7xl gap-5 lg:grid-cols-[1fr_360px]">
-          <div className="min-h-[620px] rounded-lg border border-white/10 bg-black/25 p-4 shadow-2xl shadow-black/30 backdrop-blur">
+        <div className="relative mx-auto grid max-w-[92rem] gap-5 xl:grid-cols-[1fr_380px]">
+          <div className="min-h-[760px] rounded-lg border border-white/10 bg-black/25 p-4 shadow-2xl shadow-black/30 backdrop-blur">
             <header className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.26em] text-amber-300">
@@ -175,7 +175,7 @@ export default function SnlUniverseExplorer() {
               </div>
             </header>
 
-            <div className="relative h-[520px] overflow-hidden rounded-lg border border-white/10 bg-[#151515]">
+            <div className="relative h-[680px] overflow-hidden rounded-lg border border-white/10 bg-[#151515] lg:h-[740px]">
               <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:44px_44px]" />
               <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
                 {universeEdges.map((edge) => {
@@ -207,7 +207,7 @@ export default function SnlUniverseExplorer() {
                     key={node.id}
                     type="button"
                     onClick={() => setActiveId(node.id)}
-                    className={`absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-full border px-2 py-1 text-left text-xs font-bold shadow-lg transition ${
+                    className={`absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-full border px-2.5 py-1.5 text-left text-xs font-bold shadow-lg transition ${
                       isActive
                         ? 'z-20 border-amber-200 bg-amber-300 text-black shadow-amber-500/30'
                         : isConnected
@@ -218,7 +218,7 @@ export default function SnlUniverseExplorer() {
                     aria-label={`Open ${node.name}`}
                   >
                     <span
-                      className={`grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br ${node.imageTone} text-[10px] font-black text-white`}
+                      className={`grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br ${node.imageTone} text-[10px] font-black text-white`}
                     >
                       {initials(node.name)}
                     </span>
