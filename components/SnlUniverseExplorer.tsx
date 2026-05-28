@@ -163,8 +163,8 @@ export default function SnlUniverseExplorer() {
               </div>
               <div className="grid grid-cols-3 gap-2 text-center">
                 {[
-                  ['19', 'Nodes'],
-                  ['31', 'Links'],
+                  [universeNodes.length.toString(), 'Nodes'],
+                  [universeEdges.length.toString(), 'Links'],
                   ['6', 'Modes'],
                 ].map(([value, label]) => (
                   <div key={label} className="rounded-lg border border-white/10 bg-white/8 px-3 py-2">
