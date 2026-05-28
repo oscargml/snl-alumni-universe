@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation } from 'd3-force';
 import {
   timelineMoments,
   triviaQuestions,
@@ -19,27 +20,67 @@ const nodeTypeLabels: Record<UniverseNodeType, string> = {
   award: 'Award',
 };
 
-const nodePositions: Record<string, { x: number; y: number }> = {
-  snl: { x: 50, y: 48 },
-  'bill-murray': { x: 27, y: 29 },
-  'dan-aykroyd': { x: 18, y: 51 },
-  'eddie-murphy': { x: 26, y: 72 },
-  'tina-fey': { x: 58, y: 25 },
-  'amy-poehler': { x: 72, y: 34 },
-  'maya-rudolph': { x: 83, y: 57 },
-  'adam-sandler': { x: 39, y: 80 },
-  'chris-rock': { x: 54, y: 84 },
-  'andy-samberg': { x: 72, y: 78 },
-  'kristen-wiig': { x: 88, y: 76 },
-  'will-ferrell': { x: 39, y: 16 },
-  'lorne-michaels': { x: 48, y: 10 },
-  ghostbusters: { x: 10, y: 34 },
-  'mean-girls': { x: 67, y: 13 },
-  'thirty-rock': { x: 83, y: 19 },
-  'parks-rec': { x: 89, y: 39 },
-  bridesmaids: { x: 96, y: 67 },
-  stefon: { x: 62, y: 67 },
+type LayoutNode = {
+  id: string;
+  x: number;
+  y: number;
+  fx?: number | null;
+  fy?: number | null;
 };
+
+function buildGraphLayout() {
+  const layoutNodes: LayoutNode[] = universeNodes.map((node, index) => {
+    const angle = (index / universeNodes.length) * Math.PI * 2;
+    const radius = node.id === 'snl' ? 0 : 31;
+
+    return {
+      id: node.id,
+      x: 50 + Math.cos(angle) * radius,
+      y: 50 + Math.sin(angle) * radius,
+      fx: node.id === 'snl' ? 50 : null,
+      fy: node.id === 'snl' ? 50 : null,
+    };
+  });
+
+  const layoutLinks = universeEdges.map((edge) => ({
+    source: edge.source,
+    target: edge.target,
+    strength: edge.strength,
+  }));
+
+  forceSimulation(layoutNodes)
+    .force(
+      'link',
+      forceLink<LayoutNode, (typeof layoutLinks)[number]>(layoutLinks)
+        .id((node) => node.id)
+        .distance((edge) => 28 - edge.strength * 2)
+        .strength(0.55),
+    )
+    .force('charge', forceManyBody().strength(-55))
+    .force('collide', forceCollide<LayoutNode>().radius(6.5).strength(0.9))
+    .force('center', forceCenter(50, 50))
+    .stop()
+    .tick(320);
+
+  const xValues = layoutNodes.map((node) => node.x);
+  const yValues = layoutNodes.map((node) => node.y);
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  const minY = Math.min(...yValues);
+  const maxY = Math.max(...yValues);
+  const xRange = maxX - minX || 1;
+  const yRange = maxY - minY || 1;
+
+  return Object.fromEntries(
+    layoutNodes.map((node) => [
+      node.id,
+      {
+        x: 8 + ((node.x - minX) / xRange) * 84,
+        y: 8 + ((node.y - minY) / yRange) * 84,
+      },
+    ]),
+  );
+}
 
 function initials(name: string) {
   return name
@@ -83,6 +124,7 @@ export default function SnlUniverseExplorer() {
   const [selectedTrivia, setSelectedTrivia] = useState<string | null>(null);
 
   const nodeById = useMemo(() => new Map(universeNodes.map((node) => [node.id, node])), []);
+  const nodePositions = useMemo(() => buildGraphLayout(), []);
   const activeNode = nodeById.get(activeId) ?? universeNodes[0];
   const activeConnections = universeEdges
     .filter((edge) => edge.source === activeNode.id || edge.target === activeNode.id)
