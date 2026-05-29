@@ -1,450 +1,736 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation } from 'd3-force';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   timelineMoments,
   triviaQuestions,
   universeEdges,
   universeNodes,
   type UniverseNode,
-  type UniverseNodeType,
 } from '@/lib/snl-universe';
 
-const nodeTypeLabels: Record<UniverseNodeType, string> = {
-  alumni: 'Alumni',
-  movie: 'Movie',
-  tv: 'TV',
-  character: 'Character',
-  creator: 'Creator',
-  award: 'Award',
+type Mode = 'explore' | 'path' | 'trivia' | 'timeline';
+
+const NODE_COLORS: Record<string, string> = {
+  alumni: '#F59E0B',
+  movie: '#60A5FA',
+  tv: '#A78BFA',
+  character: '#34D399',
+  creator: '#F87171',
+  award: '#FCD34D',
 };
 
-type LayoutNode = {
-  id: string;
-  x: number;
-  y: number;
-  fx?: number | null;
-  fy?: number | null;
-};
-
-function buildGraphLayout() {
-  const layoutNodes: LayoutNode[] = universeNodes.map((node, index) => {
-    const angle = (index / universeNodes.length) * Math.PI * 2;
-    const radius = node.id === 'snl' ? 0 : 31;
-
-    return {
-      id: node.id,
-      x: 50 + Math.cos(angle) * radius,
-      y: 50 + Math.sin(angle) * radius,
-      fx: node.id === 'snl' ? 50 : null,
-      fy: node.id === 'snl' ? 50 : null,
-    };
-  });
-
-  const layoutLinks = universeEdges.map((edge) => ({
-    source: edge.source,
-    target: edge.target,
-    strength: edge.strength,
-  }));
-
-  forceSimulation(layoutNodes)
-    .force(
-      'link',
-      forceLink<LayoutNode, (typeof layoutLinks)[number]>(layoutLinks)
-        .id((node) => node.id)
-        .distance((edge) => 36 - edge.strength * 2)
-        .strength(0.45),
-    )
-    .force('charge', forceManyBody().strength(-92))
-    .force('collide', forceCollide<LayoutNode>().radius(8.5).strength(0.95))
-    .force('center', forceCenter(50, 50))
-    .stop()
-    .tick(320);
-
-  const xValues = layoutNodes.map((node) => node.x);
-  const yValues = layoutNodes.map((node) => node.y);
-  const minX = Math.min(...xValues);
-  const maxX = Math.max(...xValues);
-  const minY = Math.min(...yValues);
-  const maxY = Math.max(...yValues);
-  const xRange = maxX - minX || 1;
-  const yRange = maxY - minY || 1;
-
-  return Object.fromEntries(
-    layoutNodes.map((node) => [
-      node.id,
-      {
-        x: 5 + ((node.x - minX) / xRange) * 90,
-        y: 5 + ((node.y - minY) / yRange) * 90,
-      },
-    ]),
-  );
+function nodeColor(node: Pick<UniverseNode, 'id' | 'type'>): string {
+  if (node.id === 'snl') return '#FFFFFF';
+  return NODE_COLORS[node.type] ?? '#888';
 }
 
-function initials(name: string) {
+function getInitials(name: string): string {
   return name
     .split(' ')
-    .map((part) => part[0])
+    .map((w) => w[0] ?? '')
     .join('')
     .slice(0, 2)
     .toUpperCase();
 }
 
-function findPath(startId: string, endId: string) {
+function findPath(startId: string, endId: string): string[] {
+  if (startId === endId) return [startId];
   const queue: string[][] = [[startId]];
   const visited = new Set([startId]);
-
   while (queue.length > 0) {
-    const path = queue.shift();
-    if (!path) continue;
+    const path = queue.shift()!;
     const last = path[path.length - 1];
-    if (last === endId) return path;
-
-    universeEdges
-      .filter((edge) => edge.source === last || edge.target === last)
-      .map((edge) => (edge.source === last ? edge.target : edge.source))
-      .forEach((next) => {
-        if (!visited.has(next)) {
-          visited.add(next);
-          queue.push([...path, next]);
-        }
-      });
+    for (const { source, target } of universeEdges) {
+      const src = source as string;
+      const tgt = target as string;
+      const neighbor = src === last ? tgt : tgt === last ? src : null;
+      if (neighbor && !visited.has(neighbor)) {
+        const newPath = [...path, neighbor];
+        if (neighbor === endId) return newPath;
+        visited.add(neighbor);
+        queue.push(newPath);
+      }
+    }
   }
-
   return [];
 }
 
 export default function SnlUniverseExplorer() {
-  const [activeId, setActiveId] = useState('bill-murray');
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<UniverseNodeType | 'all'>('all');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<any>(null);
+
+  // Refs for stable paint callbacks (avoid stale closures in rAF loop)
+  const highlightNodesRef = useRef<Set<string>>(new Set());
+  const highlightLinksRef = useRef<Set<string>>(new Set());
+  const activeNodeRef = useRef<UniverseNode | null>(null);
+  const modeRef = useRef<Mode>('explore');
+  const nodeByIdRef = useRef<Map<string, UniverseNode>>(new Map());
+
+  const [mounted, setMounted] = useState(false);
+  const [dims, setDims] = useState({ w: 1200, h: 800 });
+  const [mode, setMode] = useState<Mode>('explore');
+  const [activeNode, setActiveNode] = useState<UniverseNode | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<UniverseNode | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [highlightNodes, setHighlightNodes] = useState<Set<string>>(new Set());
+  const [highlightLinks, setHighlightLinks] = useState<Set<string>>(new Set());
   const [gameStart, setGameStart] = useState('adam-sandler');
   const [gameEnd, setGameEnd] = useState('eddie-murphy');
-  const [selectedTrivia, setSelectedTrivia] = useState<string | null>(null);
+  const [triviaIndex, setTriviaIndex] = useState(0);
+  const [triviaAnswer, setTriviaAnswer] = useState<string | null>(null);
+  const [triviaScore, setTriviaScore] = useState(0);
+  const [search, setSearch] = useState('');
 
-  const nodeById = useMemo(() => new Map(universeNodes.map((node) => [node.id, node])), []);
-  const nodePositions = useMemo(() => buildGraphLayout(), []);
-  const activeNode = nodeById.get(activeId) ?? universeNodes[0];
-  const activeConnections = universeEdges
-    .filter((edge) => edge.source === activeNode.id || edge.target === activeNode.id)
-    .map((edge) => ({
-      edge,
-      node: nodeById.get(edge.source === activeNode.id ? edge.target : edge.source),
-    }))
-    .filter((item): item is { edge: (typeof universeEdges)[number]; node: UniverseNode } =>
-      Boolean(item.node),
-    );
+  // Keep refs in sync with state so stable paint callbacks see latest values
+  useEffect(() => { highlightNodesRef.current = highlightNodes; }, [highlightNodes]);
+  useEffect(() => { highlightLinksRef.current = highlightLinks; }, [highlightLinks]);
+  useEffect(() => { activeNodeRef.current = activeNode; }, [activeNode]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
 
-  const filteredNodes = universeNodes.filter((node) => {
-    const matchesQuery = node.name.toLowerCase().includes(query.toLowerCase());
-    const matchesFilter = filter === 'all' || node.type === filter;
-    return matchesQuery && matchesFilter;
-  });
+  useEffect(() => {
+    setMounted(true);
+    const update = () => setDims({ w: window.innerWidth, h: window.innerHeight });
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
-  const gamePath = findPath(gameStart, gameEnd);
-  const trivia = triviaQuestions[0];
-  const isCorrect = selectedTrivia === trivia.answer;
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => setMousePos({ x: e.clientX, y: e.clientY });
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, []);
+
+  // Graph data — copies so original arrays stay pristine for BFS
+  const graphData = useMemo(
+    () => ({
+      nodes: universeNodes.map((n) => ({ ...n })),
+      links: universeEdges.map((e) => ({ ...e })),
+    }),
+    [],
+  );
+
+  const nodeById = useMemo(() => {
+    const map = new Map(universeNodes.map((n) => [n.id, n]));
+    nodeByIdRef.current = map;
+    return map;
+  }, []);
+
+  // Stable paint callbacks — read from refs so they never go stale
+  const paintNode = useCallback(
+    (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const hl = highlightNodesRef.current;
+      const active = activeNodeRef.current;
+      const uNode = node as UniverseNode;
+      const color = nodeColor(uNode);
+      const isSNL = node.id === 'snl';
+      const isActive = active?.id === node.id;
+      const isHighlighted = hl.size === 0 || hl.has(node.id);
+
+      const baseSize = isSNL ? 11 : 6;
+      const size = isActive ? baseSize * 1.45 : baseSize;
+      const alpha = hl.size > 0 ? (isHighlighted ? 1 : 0.1) : 1;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      if (isHighlighted) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = isActive ? 24 : isSNL ? 18 : 10;
+      }
+
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, size, 0, Math.PI * 2);
+      ctx.fillStyle = isHighlighted ? color : `${color}33`;
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = isActive ? '#FFFFFF' : color;
+      ctx.lineWidth = isActive ? 2 : 1;
+      ctx.stroke();
+
+      const fontSize = Math.max(size * 0.52, 3);
+      ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(0,0,0,0.85)';
+      ctx.fillText(getInitials(node.name), node.x, node.y);
+
+      if (globalScale >= 2 && isHighlighted) {
+        const ls = Math.max(size * 0.4, 2.5);
+        ctx.font = `${ls}px system-ui, sans-serif`;
+        ctx.fillStyle = `rgba(255,255,255,${alpha * 0.85})`;
+        ctx.shadowBlur = 0;
+        ctx.fillText(node.name, node.x, node.y + size + ls);
+      }
+
+      ctx.restore();
+    },
+    [],
+  );
+
+  const paintLink = useCallback((link: any, ctx: CanvasRenderingContext2D) => {
+    const hl = highlightLinksRef.current;
+    const m = modeRef.current;
+    const srcId = typeof link.source === 'object' ? link.source.id : link.source;
+    const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
+    const srcNode = typeof link.source === 'object' ? link.source : null;
+    const tgtNode = typeof link.target === 'object' ? link.target : null;
+    if (!srcNode || !tgtNode) return;
+
+    const isHighlighted = hl.has(`${srcId}-${tgtId}`) || hl.has(`${tgtId}-${srcId}`);
+    const hasHL = hl.size > 0;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(srcNode.x, srcNode.y);
+    ctx.lineTo(tgtNode.x, tgtNode.y);
+
+    if (isHighlighted) {
+      const col = m === 'path' ? '#FBBF24' : (NODE_COLORS[nodeByIdRef.current.get(srcId)?.type ?? ''] ?? '#FFFFFF');
+      const pulse = Math.sin(Date.now() / 350) * 0.4 + 0.6;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = m === 'path' ? 2 : 1.5;
+      ctx.globalAlpha = pulse;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 6 + pulse * 6;
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+      ctx.lineWidth = 0.5;
+      ctx.globalAlpha = hasHL ? 0.04 : 0.2;
+    }
+
+    ctx.stroke();
+    ctx.restore();
+  }, []);
+
+  const paintPointerArea = useCallback(
+    (node: any, color: string, ctx: CanvasRenderingContext2D) => {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.id === 'snl' ? 14 : 9, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    },
+    [],
+  );
+
+  const handleNodeClick = useCallback(
+    (node: any) => {
+      const uNode = nodeByIdRef.current.get(node.id);
+      if (!uNode) return;
+      setActiveNode(uNode);
+      setSidebarOpen(true);
+      graphRef.current?.centerAt(node.x, node.y, 600);
+      graphRef.current?.zoom(3.5, 600);
+    },
+    [],
+  );
+
+  const handleNodeHover = useCallback((node: any) => {
+    setHoveredNode(node ? (nodeByIdRef.current.get(node.id) ?? null) : null);
+    document.body.style.cursor = node ? 'pointer' : 'default';
+  }, []);
+
+  // Init force-graph (2D-only package, no AFRAME dependency)
+  useEffect(() => {
+    if (!mounted || !containerRef.current) return;
+
+    let graph: any;
+    import('force-graph').then(({ default: ForceGraph }) => {
+      if (!containerRef.current) return;
+      graph = (ForceGraph as any)()(containerRef.current)
+        .graphData(graphData)
+        .width(dims.w)
+        .height(dims.h)
+        .backgroundColor('#03030a')
+        .nodeCanvasObject(paintNode)
+        .nodeCanvasObjectMode(() => 'replace')
+        .linkCanvasObject(paintLink)
+        .linkCanvasObjectMode(() => 'replace')
+        .onNodeClick(handleNodeClick)
+        .onNodeHover(handleNodeHover)
+        .nodePointerAreaPaint(paintPointerArea)
+        .nodeLabel('')
+        .d3AlphaDecay(0.025)
+        .d3VelocityDecay(0.35)
+        .cooldownTicks(180);
+
+      graphRef.current = graph;
+    });
+
+    return () => {
+      graph?._destructor?.();
+      graphRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+
+  // Update dimensions when window resizes
+  useEffect(() => {
+    graphRef.current?.width(dims.w).height(dims.h);
+  }, [dims]);
+
+  // Highlight active node + neighbors
+  useEffect(() => {
+    if (mode === 'path') return;
+    if (!activeNode) {
+      setHighlightNodes(new Set());
+      setHighlightLinks(new Set());
+      return;
+    }
+    const nodes = new Set<string>([activeNode.id]);
+    const links = new Set<string>();
+    for (const e of universeEdges) {
+      if (e.source === activeNode.id || e.target === activeNode.id) {
+        nodes.add(e.source as string);
+        nodes.add(e.target as string);
+        links.add(`${e.source}-${e.target}`);
+        links.add(`${e.target}-${e.source}`);
+      }
+    }
+    setHighlightNodes(nodes);
+    setHighlightLinks(links);
+  }, [activeNode, mode]);
+
+  // Path computation
+  const gamePath = useMemo(() => {
+    if (mode !== 'path') return [];
+    return findPath(gameStart, gameEnd);
+  }, [mode, gameStart, gameEnd]);
+
+  useEffect(() => {
+    if (mode !== 'path') return;
+    if (gamePath.length === 0) {
+      setHighlightNodes(new Set());
+      setHighlightLinks(new Set());
+      return;
+    }
+    const nodes = new Set(gamePath);
+    const links = new Set<string>();
+    for (let i = 0; i < gamePath.length - 1; i++) {
+      links.add(`${gamePath[i]}-${gamePath[i + 1]}`);
+      links.add(`${gamePath[i + 1]}-${gamePath[i]}`);
+    }
+    setHighlightNodes(nodes);
+    setHighlightLinks(links);
+  }, [mode, gamePath]);
+
+  const switchMode = useCallback(
+    (m: Mode) => {
+      setMode(m);
+      if (m !== 'path' && modeRef.current === 'path') {
+        if (activeNodeRef.current) {
+          const an = activeNodeRef.current;
+          const nodes = new Set<string>([an.id]);
+          const links = new Set<string>();
+          for (const e of universeEdges) {
+            if (e.source === an.id || e.target === an.id) {
+              nodes.add(e.source as string);
+              nodes.add(e.target as string);
+              links.add(`${e.source}-${e.target}`);
+              links.add(`${e.target}-${e.source}`);
+            }
+          }
+          setHighlightNodes(nodes);
+          setHighlightLinks(links);
+        } else {
+          setHighlightNodes(new Set());
+          setHighlightLinks(new Set());
+        }
+      }
+      if (m === 'timeline') setSidebarOpen(false);
+    },
+    [],
+  );
+
+  const flyToNode = useCallback((id: string) => {
+    const gNode = (graphData.nodes as any[]).find((n: any) => n.id === id);
+    if (gNode && graphRef.current) {
+      graphRef.current.centerAt(gNode.x, gNode.y, 600);
+      graphRef.current.zoom(3.5, 600);
+    }
+  }, [graphData]);
+
+  const activeConnections = useMemo(() => {
+    if (!activeNode) return [];
+    return universeEdges
+      .filter((e) => e.source === activeNode.id || e.target === activeNode.id)
+      .map((e) => {
+        const otherId = (e.source === activeNode.id ? e.target : e.source) as string;
+        const n = nodeById.get(otherId);
+        return n ? { edge: e, node: n } : null;
+      })
+      .filter((x): x is { edge: (typeof universeEdges)[0]; node: UniverseNode } => x !== null);
+  }, [activeNode, nodeById]);
+
+  const searchResults = useMemo(() => {
+    if (!search.trim()) return [];
+    const q = search.toLowerCase();
+    return universeNodes.filter((n) => n.name.toLowerCase().includes(q)).slice(0, 8);
+  }, [search]);
+
+  const trivia = triviaQuestions[triviaIndex];
+  const triviaCorrect = triviaAnswer === trivia.answer;
+  const alumniNodes = universeNodes.filter((n) => n.type === 'alumni');
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[#111112] text-stone-100">
-      <section className="relative min-h-[92vh] border-b border-white/10 px-4 py-5 sm:px-6 lg:px-8">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(222,49,49,0.22),transparent_28%),linear-gradient(135deg,#111112_0%,#171717_42%,#2b1711_100%)]" />
-        <div className="relative mx-auto grid max-w-[92rem] gap-5 xl:grid-cols-[1fr_380px]">
-          <div className="min-h-[760px] rounded-lg border border-white/10 bg-black/25 p-4 shadow-2xl shadow-black/30 backdrop-blur">
-            <header className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.26em] text-amber-300">
-                  Interactive comedy database
-                </p>
-                <h1 className="mt-2 max-w-3xl text-4xl font-black leading-none text-white sm:text-6xl lg:text-7xl">
-                  Saturday Night Live Alumni Universe
-                </h1>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-center">
-                {[
-                  [universeNodes.length.toString(), 'Nodes'],
-                  [universeEdges.length.toString(), 'Links'],
-                  ['6', 'Modes'],
-                ].map(([value, label]) => (
-                  <div key={label} className="rounded-lg border border-white/10 bg-white/8 px-3 py-2">
-                    <div className="text-xl font-black text-white">{value}</div>
-                    <div className="text-[11px] uppercase tracking-widest text-stone-400">{label}</div>
-                  </div>
-                ))}
-              </div>
-            </header>
+    <main className="w-full h-screen bg-black overflow-hidden relative select-none">
+      {/* Graph canvas container */}
+      <div ref={containerRef} className="absolute inset-0" />
 
-            <div className="relative h-[680px] overflow-hidden rounded-lg border border-white/10 bg-[#151515] lg:h-[740px]">
-              <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:44px_44px]" />
-              <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                {universeEdges.map((edge) => {
-                  const source = nodePositions[edge.source];
-                  const target = nodePositions[edge.target];
-                  const isActive = edge.source === activeNode.id || edge.target === activeNode.id;
+      {/* Header */}
+      <header className="absolute top-0 inset-x-0 z-30 px-4 pt-3 pb-10 bg-gradient-to-b from-black/85 via-black/40 to-transparent pointer-events-none">
+        <div className="flex items-center gap-3 pointer-events-auto flex-wrap">
+          <div className="shrink-0">
+            <p className="text-[9px] font-bold uppercase tracking-[0.32em] text-amber-400">Interactive</p>
+            <h1 className="text-base font-black text-white leading-none">SNL Universe</h1>
+          </div>
 
-                  return (
-                    <line
-                      key={`${edge.source}-${edge.target}`}
-                      x1={source.x}
-                      y1={source.y}
-                      x2={target.x}
-                      y2={target.y}
-                      stroke={isActive ? '#f7c948' : 'rgba(255,255,255,0.22)'}
-                      strokeWidth={isActive ? 0.42 : 0.18}
-                    />
-                  );
-                })}
-              </svg>
-
-              {universeNodes.map((node) => {
-                const position = nodePositions[node.id];
-                const isActive = node.id === activeNode.id;
-                const isConnected = activeConnections.some((connection) => connection.node.id === node.id);
-
-                return (
+          <div className="relative max-w-xs flex-1 min-w-[160px]">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onBlur={() => setTimeout(() => setSearch(''), 200)}
+              placeholder="Search alumni, films..."
+              className="w-full rounded-full border border-white/15 bg-white/8 px-4 py-1.5 text-sm text-white placeholder:text-white/35 outline-none focus:border-amber-400/60"
+            />
+            {searchResults.length > 0 && (
+              <div className="absolute top-full mt-1.5 left-0 right-0 rounded-xl bg-black/98 border border-white/10 overflow-hidden shadow-2xl z-30">
+                {searchResults.map((n) => (
                   <button
-                    key={node.id}
-                    type="button"
-                    onClick={() => setActiveId(node.id)}
-                    className={`absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-full border px-2.5 py-1.5 text-left text-xs font-bold shadow-lg transition ${
-                      isActive
-                        ? 'z-20 border-amber-200 bg-amber-300 text-black shadow-amber-500/30'
-                        : isConnected
-                          ? 'z-10 border-white/35 bg-white text-black'
-                          : 'border-white/10 bg-black/70 text-stone-200 hover:border-white/40'
-                    }`}
-                    style={{ left: `${position.x}%`, top: `${position.y}%` }}
-                    aria-label={`Open ${node.name}`}
+                    key={n.id}
+                    onMouseDown={() => {
+                      setSearch('');
+                      setActiveNode(n);
+                      setSidebarOpen(true);
+                      if (mode !== 'timeline') flyToNode(n.id);
+                    }}
+                    className="flex w-full items-center gap-2.5 px-3 py-2.5 hover:bg-white/8 text-left"
                   >
                     <span
-                      className={`grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br ${node.imageTone} text-[10px] font-black text-white`}
-                    >
-                      {initials(node.name)}
-                    </span>
-                    <span className="hidden max-w-[96px] truncate sm:block">{node.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <aside className="rounded-lg border border-white/10 bg-[#181818] p-4 shadow-2xl shadow-black/30">
-            <div
-              className={`mb-4 grid aspect-[16/9] place-items-end rounded-lg bg-gradient-to-br ${activeNode.imageTone} p-4`}
-            >
-              <div className="w-full">
-                <span className="rounded-full bg-black/45 px-3 py-1 text-xs font-bold uppercase tracking-widest text-white">
-                  {nodeTypeLabels[activeNode.type]}
-                </span>
-                <h2 className="mt-3 text-3xl font-black leading-tight text-white">{activeNode.name}</h2>
-              </div>
-            </div>
-            <p className="text-sm font-semibold text-amber-200">
-              {activeNode.role} {activeNode.years ? `| ${activeNode.years}` : ''}
-            </p>
-            <p className="mt-3 text-sm leading-6 text-stone-300">{activeNode.bio}</p>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              {activeNode.tags.map((tag) => (
-                <span key={tag} className="rounded-full bg-white/8 px-3 py-1 text-xs text-stone-200">
-                  {tag}
-                </span>
-              ))}
-            </div>
-
-            <section className="mt-5">
-              <h3 className="text-sm font-black uppercase tracking-widest text-white">Connected to</h3>
-              <div className="mt-3 space-y-2">
-                {activeConnections.slice(0, 6).map(({ edge, node }) => (
-                  <button
-                    key={`${edge.source}-${edge.target}`}
-                    type="button"
-                    onClick={() => setActiveId(node.id)}
-                    className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-left hover:border-amber-300/70"
-                  >
-                    <span>
-                      <span className="block text-sm font-bold text-white">{node.name}</span>
-                      <span className="block text-xs text-stone-400">{edge.relation}</span>
-                    </span>
-                    <span className="text-xs font-bold text-amber-300">
-                      {edge.project ?? nodeTypeLabels[node.type]}
-                    </span>
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: nodeColor(n), boxShadow: `0 0 5px ${nodeColor(n)}` }}
+                    />
+                    <span className="text-sm font-semibold text-white">{n.name}</span>
+                    <span className="ml-auto text-[10px] uppercase tracking-wider text-white/35">{n.type}</span>
                   </button>
                 ))}
               </div>
-            </section>
-          </aside>
-        </div>
-      </section>
-
-      <section className="bg-[#f4efe6] px-4 py-12 text-[#181818] sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[320px_1fr]">
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.24em] text-red-700">Discovery console</p>
-            <h2 className="mt-2 text-3xl font-black">Search the seed universe</h2>
-            <p className="mt-3 text-sm leading-6 text-stone-700">
-              This MVP starts with a curated set of alumni, films, shows, characters, and producer links.
-            </p>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              className="mt-5 w-full rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm outline-none focus:border-red-700"
-              placeholder="Search Bill, Tina, Ghostbusters..."
-            />
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {(['all', 'alumni', 'movie', 'tv', 'character', 'creator'] as const).map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setFilter(item)}
-                  className={`rounded-lg border px-3 py-2 text-sm font-bold ${
-                    filter === item
-                      ? 'border-[#181818] bg-[#181818] text-white'
-                      : 'border-stone-300 bg-white text-stone-700'
-                  }`}
-                >
-                  {item === 'all' ? 'All' : nodeTypeLabels[item]}
-                </button>
-              ))}
-            </div>
+            )}
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {filteredNodes.map((node) => (
+          <span className="hidden md:block text-xs text-white/25 shrink-0">
+            {universeNodes.length} nodes · {universeEdges.length} links
+          </span>
+
+          <div className="ml-auto flex items-center gap-1 shrink-0 flex-wrap">
+            {(
+              [
+                ['explore', 'Explore'],
+                ['path', 'Path Finder'],
+                ['trivia', 'Trivia'],
+                ['timeline', 'Timeline'],
+              ] as [Mode, string][]
+            ).map(([m, label]) => (
               <button
-                key={node.id}
-                type="button"
-                onClick={() => setActiveId(node.id)}
-                className="rounded-lg border border-stone-300 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-red-700"
+                key={m}
+                onClick={() => switchMode(m)}
+                className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                  mode === m
+                    ? 'bg-amber-400 text-black shadow-lg shadow-amber-400/25'
+                    : 'bg-white/8 text-white/60 hover:bg-white/15 hover:text-white'
+                }`}
               >
-                <div
-                  className={`mb-4 grid aspect-[16/7] place-items-center rounded-lg bg-gradient-to-br ${node.imageTone}`}
-                >
-                  <span className="text-3xl font-black text-white">{initials(node.name)}</span>
-                </div>
-                <p className="text-xs font-black uppercase tracking-widest text-red-700">
-                  {nodeTypeLabels[node.type]}
-                </p>
-                <h3 className="mt-1 text-xl font-black">{node.name}</h3>
-                <p className="mt-2 text-sm leading-6 text-stone-700">{node.bio}</p>
+                {label}
               </button>
             ))}
           </div>
         </div>
-      </section>
+      </header>
 
-      <section className="bg-[#181818] px-4 py-12 text-white sm:px-6 lg:px-8">
-        <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-2">
-          <div className="rounded-lg border border-white/10 bg-white/5 p-5">
-            <p className="text-xs font-black uppercase tracking-[0.24em] text-amber-300">Six Degrees mode</p>
-            <h2 className="mt-2 text-3xl font-black">Connection Chains</h2>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <select
-                value={gameStart}
-                onChange={(event) => setGameStart(event.target.value)}
-                className="rounded-lg border border-white/10 bg-[#111112] px-3 py-3 text-sm"
-              >
-                {universeNodes
-                  .filter((node) => node.type === 'alumni')
-                  .map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.name}
-                    </option>
-                  ))}
-              </select>
-              <select
-                value={gameEnd}
-                onChange={(event) => setGameEnd(event.target.value)}
-                className="rounded-lg border border-white/10 bg-[#111112] px-3 py-3 text-sm"
-              >
-                {universeNodes
-                  .filter((node) => node.type === 'alumni')
-                  .map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.name}
-                    </option>
-                  ))}
-              </select>
-            </div>
-            <div className="mt-5 flex flex-wrap items-center gap-2">
-              {gamePath.map((id, index) => {
-                const node = nodeById.get(id);
-                if (!node) return null;
+      {/* Legend */}
+      <div className="absolute bottom-4 left-4 z-10 space-y-1.5 pointer-events-none">
+        {Object.entries(NODE_COLORS).map(([type, color]) => (
+          <div key={type} className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
+            <span className="text-[10px] capitalize text-white/35">{type}</span>
+          </div>
+        ))}
+      </div>
 
-                return (
-                  <span key={id} className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveId(id)}
-                      className="rounded-full bg-amber-300 px-3 py-2 text-xs font-black text-black"
-                    >
-                      {node.name}
-                    </button>
-                    {index < gamePath.length - 1 ? <span className="text-stone-500">/</span> : null}
-                  </span>
-                );
-              })}
-            </div>
-            <p className="mt-4 text-sm text-stone-400">
-              Score preview: {Math.max(1000 - gamePath.length * 125, 250)} points for a{' '}
-              {gamePath.length - 1}-link path.
+      {/* Controls hint */}
+      <div className="absolute bottom-4 right-4 z-10 text-[10px] text-white/18 text-right space-y-0.5 pointer-events-none">
+        <p>Scroll to zoom · Drag to pan</p>
+        <p>Click node to explore</p>
+      </div>
+
+      {/* Hover tooltip */}
+      {hoveredNode && (
+        <div
+          className="absolute z-30 pointer-events-none max-w-[200px] rounded-xl bg-black/96 border border-white/10 p-3 shadow-2xl"
+          style={{
+            left: Math.min(mousePos.x + 14, dims.w - 220),
+            top: Math.min(mousePos.y + 14, dims.h - 180),
+          }}
+        >
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: nodeColor(hoveredNode), boxShadow: `0 0 5px ${nodeColor(hoveredNode)}` }}
+            />
+            <span
+              className="text-[9px] font-bold uppercase tracking-wider"
+              style={{ color: nodeColor(hoveredNode) }}
+            >
+              {hoveredNode.type}
+            </span>
+          </div>
+          <p className="font-black text-white text-sm leading-tight">{hoveredNode.name}</p>
+          {hoveredNode.years && <p className="text-[10px] text-white/40 mt-0.5">{hoveredNode.years}</p>}
+          {hoveredNode.catchphrases?.[0] && (
+            <p className="mt-1.5 text-[10px] text-amber-300 italic leading-relaxed">
+              &ldquo;{hoveredNode.catchphrases[0]}&rdquo;
             </p>
-          </div>
-
-          <div className="rounded-lg border border-white/10 bg-white/5 p-5">
-            <p className="text-xs font-black uppercase tracking-[0.24em] text-cyan-300">Trivia mode</p>
-            <h2 className="mt-2 text-3xl font-black">Hardcore fan check</h2>
-            <p className="mt-4 text-lg font-bold">{trivia.prompt}</p>
-            <div className="mt-5 grid gap-2">
-              {trivia.options.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setSelectedTrivia(option)}
-                  className={`rounded-lg border px-4 py-3 text-left text-sm font-bold ${
-                    selectedTrivia === option
-                      ? option === trivia.answer
-                        ? 'border-emerald-300 bg-emerald-300 text-black'
-                        : 'border-red-300 bg-red-300 text-black'
-                      : 'border-white/10 bg-[#111112] text-white'
-                  }`}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-            {selectedTrivia ? (
-              <p className="mt-4 text-sm font-bold text-stone-300">
-                {isCorrect
-                  ? 'Correct. That is a clean read of the map.'
-                  : 'Not quite. Follow the Tina Fey node and try again.'}
-              </p>
-            ) : null}
-          </div>
+          )}
+          <p className="mt-1.5 text-[10px] text-white/50 leading-relaxed line-clamp-2">{hoveredNode.bio}</p>
         </div>
-      </section>
+      )}
 
-      <section className="bg-[#f4efe6] px-4 py-12 text-[#181818] sm:px-6 lg:px-8">
-        <div className="mx-auto max-w-7xl">
-          <p className="text-xs font-black uppercase tracking-[0.24em] text-red-700">Timeline mode</p>
-          <h2 className="mt-2 text-3xl font-black">Comedy eras from 1975 onward</h2>
-          <div className="mt-6 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {/* Sidebar — node detail */}
+      <aside
+        className={`absolute top-0 right-0 bottom-0 z-10 w-[290px] bg-black/96 border-l border-white/8 overflow-y-auto transition-transform duration-300 ${
+          sidebarOpen && activeNode && mode !== 'timeline' ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        {activeNode && (
+          <>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="absolute top-3 right-3 z-10 w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-sm text-white/70"
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <div className={`h-28 bg-gradient-to-br ${activeNode.imageTone} p-4 flex flex-col justify-end`}>
+              <span className="text-[9px] font-bold uppercase tracking-widest text-white/65 mb-1.5">
+                {activeNode.type}
+              </span>
+              <h2 className="text-xl font-black text-white leading-tight">{activeNode.name}</h2>
+              {activeNode.years && <p className="text-[11px] text-white/55 mt-0.5">{activeNode.years}</p>}
+            </div>
+            <div className="p-4 space-y-3.5">
+              {activeNode.role && <p className="text-xs font-bold text-amber-300">{activeNode.role}</p>}
+              <p className="text-[13px] text-white/62 leading-6">{activeNode.bio}</p>
+              {activeNode.catchphrases?.length ? (
+                <div className="rounded-lg bg-white/5 border border-white/8 p-3">
+                  {activeNode.catchphrases.map((c) => (
+                    <p key={c} className="text-sm text-amber-300 italic">
+                      &ldquo;{c}&rdquo;
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-1.5">
+                {activeNode.tags.map((t) => (
+                  <span key={t} className="text-[10px] px-2 py-0.5 rounded-full bg-white/8 text-white/45">
+                    {t}
+                  </span>
+                ))}
+              </div>
+              {activeNode.highlights.length > 0 && (
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-white/22 mb-2">Highlights</p>
+                  {activeNode.highlights.map((h) => (
+                    <p key={h} className="text-[12px] text-white/50 py-0.5">· {h}</p>
+                  ))}
+                </div>
+              )}
+              {activeNode.awards?.length ? (
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-white/22 mb-1.5">Awards</p>
+                  <div className="flex flex-wrap gap-1">
+                    {activeNode.awards.map((a) => (
+                      <span key={a} className="text-[10px] px-2 py-0.5 rounded-full border border-amber-400/30 text-amber-400/70">
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-white/22 mb-2">
+                  Connections ({activeConnections.length})
+                </p>
+                <div className="space-y-1.5">
+                  {activeConnections.map(({ edge, node: n }) => (
+                    <button
+                      key={`${edge.source as string}-${edge.target as string}`}
+                      onClick={() => { setActiveNode(n); flyToNode(n.id); }}
+                      className="flex w-full items-center gap-2 rounded-lg border border-white/8 bg-white/4 px-3 py-2 hover:border-amber-400/35 text-left transition-colors"
+                    >
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: nodeColor(n) }} />
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-[13px] font-semibold text-white truncate">{n.name}</span>
+                        <span className="block text-[10px] text-white/38 truncate">{edge.relation}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </aside>
+
+      {/* Path Finder panel */}
+      {mode === 'path' && (
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 bg-black/96 border border-white/10 rounded-2xl p-4 shadow-2xl w-[500px] max-w-[calc(100vw-2rem)]">
+          <p className="text-[9px] font-bold uppercase tracking-widest text-amber-400 mb-2.5">
+            Six Degrees · Path Finder
+          </p>
+          <div className="flex items-center gap-2">
+            <select
+              value={gameStart}
+              onChange={(e) => setGameStart(e.target.value)}
+              className="flex-1 rounded-lg border border-white/15 bg-white/8 px-3 py-2 text-sm text-white outline-none"
+            >
+              {alumniNodes.map((n) => (
+                <option key={n.id} value={n.id} className="bg-[#111]">{n.name}</option>
+              ))}
+            </select>
+            <span className="text-white/30 text-sm shrink-0">→</span>
+            <select
+              value={gameEnd}
+              onChange={(e) => setGameEnd(e.target.value)}
+              className="flex-1 rounded-lg border border-white/15 bg-white/8 px-3 py-2 text-sm text-white outline-none"
+            >
+              {alumniNodes.map((n) => (
+                <option key={n.id} value={n.id} className="bg-[#111]">{n.name}</option>
+              ))}
+            </select>
+          </div>
+          {gamePath.length > 0 ? (
+            <div className="mt-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {gamePath.map((id, i) => {
+                  const n = nodeById.get(id);
+                  if (!n) return null;
+                  return (
+                    <span key={id} className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => { setActiveNode(n); setSidebarOpen(true); flyToNode(id); }}
+                        className="px-2.5 py-1 rounded-full text-[11px] font-bold text-black"
+                        style={{ background: nodeColor(n) }}
+                      >
+                        {n.name}
+                      </button>
+                      {i < gamePath.length - 1 && (
+                        <span className="text-white/25 text-[11px]">→</span>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[11px] text-white/35">
+                {gamePath.length - 1} hop{gamePath.length !== 2 ? 's' : ''} ·{' '}
+                {Math.max(1000 - (gamePath.length - 1) * 125, 250)} pts
+              </p>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-white/35">No path found.</p>
+          )}
+        </div>
+      )}
+
+      {/* Trivia panel */}
+      {mode === 'trivia' && (
+        <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 bg-black/96 border border-white/10 rounded-2xl p-5 shadow-2xl w-[460px] max-w-[calc(100vw-2rem)]">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-cyan-400">
+              Trivia · {triviaIndex + 1} / {triviaQuestions.length}
+            </p>
+            {triviaScore > 0 && (
+              <span className="text-xs font-bold text-amber-400">{triviaScore} pts</span>
+            )}
+          </div>
+          <p className="font-bold text-white text-sm leading-6 mb-4">{trivia.prompt}</p>
+          <div className="space-y-2">
+            {trivia.options.map((opt) => (
+              <button
+                key={opt}
+                disabled={!!triviaAnswer}
+                onClick={() => {
+                  setTriviaAnswer(opt);
+                  if (opt === trivia.answer) setTriviaScore((s) => s + 250);
+                }}
+                className={`w-full px-4 py-2.5 rounded-lg text-sm font-semibold text-left transition-all ${
+                  triviaAnswer === opt
+                    ? opt === trivia.answer
+                      ? 'bg-emerald-500 text-white border border-emerald-400'
+                      : 'bg-red-500/40 text-white border border-red-400/40'
+                    : triviaAnswer && opt === trivia.answer
+                      ? 'bg-emerald-500/22 text-emerald-300 border border-emerald-400/30'
+                      : 'bg-white/6 text-white border border-white/10 hover:bg-white/12 disabled:cursor-default'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+          {triviaAnswer && (
+            <div className="mt-3 flex items-center justify-between">
+              <p className="text-sm font-semibold">
+                {triviaCorrect ? (
+                  <span className="text-emerald-400">Correct!</span>
+                ) : (
+                  <span className="text-red-400">Answer: {trivia.answer}</span>
+                )}
+              </p>
+              {triviaIndex < triviaQuestions.length - 1 ? (
+                <button
+                  onClick={() => { setTriviaIndex((i) => i + 1); setTriviaAnswer(null); }}
+                  className="text-xs font-bold text-amber-400 hover:text-amber-300"
+                >
+                  Next →
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setTriviaIndex(0); setTriviaAnswer(null); setTriviaScore(0); }}
+                  className="text-xs font-bold text-white/45 hover:text-white/75"
+                >
+                  Restart
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Timeline panel */}
+      {mode === 'timeline' && (
+        <div className="absolute top-0 right-0 bottom-0 z-20 w-[340px] bg-black/96 border-l border-white/8 overflow-y-auto">
+          <div className="sticky top-0 bg-black/90 p-4 border-b border-white/8">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-red-400">Timeline</p>
+            <h2 className="text-lg font-black text-white">Comedy Eras</h2>
+          </div>
+          <div className="p-4 space-y-3">
             {timelineMoments.map((moment) => (
-              <article key={moment.year} className="rounded-lg border border-stone-300 bg-white p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-3xl font-black text-red-700">{moment.year}</span>
-                  <span className="rounded-full bg-[#181818] px-3 py-1 text-xs font-bold text-white">
+              <article key={moment.year} className="rounded-xl border border-white/8 bg-white/4 p-4">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <span className="text-2xl font-black text-red-400">{moment.year}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-white/35 bg-white/8 rounded-full px-2 py-0.5 mt-1">
                     {moment.era}
                   </span>
                 </div>
-                <h3 className="mt-4 text-lg font-black">{moment.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-stone-700">{moment.detail}</p>
+                <h3 className="text-sm font-black text-white mb-1.5">{moment.title}</h3>
+                <p className="text-[11px] text-white/52 leading-relaxed">{moment.detail}</p>
               </article>
             ))}
           </div>
         </div>
-      </section>
+      )}
     </main>
   );
 }
