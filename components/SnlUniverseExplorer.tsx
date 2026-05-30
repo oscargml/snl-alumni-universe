@@ -66,6 +66,7 @@ export default function SnlUniverseExplorer() {
   const activeNodeRef = useRef<UniverseNode | null>(null);
   const modeRef = useRef<Mode>('explore');
   const nodeByIdRef = useRef<Map<string, UniverseNode>>(new Map());
+  const typeFilterRef = useRef<UniverseNode['type'] | null>(null);
 
   const [mounted, setMounted] = useState(false);
   const [dims, setDims] = useState({ w: 1200, h: 800 });
@@ -82,12 +83,14 @@ export default function SnlUniverseExplorer() {
   const [triviaAnswer, setTriviaAnswer] = useState<string | null>(null);
   const [triviaScore, setTriviaScore] = useState(0);
   const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<UniverseNode['type'] | null>(null);
 
   // Keep refs in sync with state so stable paint callbacks see latest values
   useEffect(() => { highlightNodesRef.current = highlightNodes; }, [highlightNodes]);
   useEffect(() => { highlightLinksRef.current = highlightLinks; }, [highlightLinks]);
   useEffect(() => { activeNodeRef.current = activeNode; }, [activeNode]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { typeFilterRef.current = typeFilter; }, [typeFilter]);
 
   useEffect(() => {
     setMounted(true);
@@ -123,15 +126,17 @@ export default function SnlUniverseExplorer() {
     (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const hl = highlightNodesRef.current;
       const active = activeNodeRef.current;
+      const filter = typeFilterRef.current;
       const uNode = node as UniverseNode;
       const color = nodeColor(uNode);
       const isSNL = node.id === 'snl';
       const isActive = active?.id === node.id;
-      const isHighlighted = hl.size === 0 || hl.has(node.id);
+      const passesFilter = !filter || uNode.type === filter || isSNL;
+      const isHighlighted = (hl.size === 0 || hl.has(node.id)) && passesFilter;
 
       const baseSize = isSNL ? 11 : 6;
       const size = isActive ? baseSize * 1.45 : baseSize;
-      const alpha = hl.size > 0 ? (isHighlighted ? 1 : 0.1) : 1;
+      const alpha = isHighlighted ? 1 : 0.1;
 
       ctx.save();
       ctx.globalAlpha = alpha;
@@ -253,6 +258,7 @@ export default function SnlUniverseExplorer() {
         .onNodeHover(handleNodeHover)
         .nodePointerAreaPaint(paintPointerArea)
         .nodeLabel('')
+        .autoPauseRedraw(false) // keep painting so filter/highlight/link-pulse stay live
         .d3AlphaDecay(0.025)
         .d3VelocityDecay(0.35)
         .cooldownTicks(180);
@@ -353,6 +359,15 @@ export default function SnlUniverseExplorer() {
     }
   }, [graphData]);
 
+  const surpriseMe = useCallback(() => {
+    const pool = universeNodes.filter((n) => n.id !== 'snl');
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    setMode('explore');
+    setActiveNode(pick);
+    setSidebarOpen(true);
+    flyToNode(pick.id);
+  }, [flyToNode]);
+
   const activeConnections = useMemo(() => {
     if (!activeNode) return [];
     return universeEdges
@@ -426,6 +441,13 @@ export default function SnlUniverseExplorer() {
           </span>
 
           <div className="ml-auto flex items-center gap-1 shrink-0 flex-wrap">
+            <button
+              onClick={surpriseMe}
+              title="Jump to a random corner of the universe"
+              className="px-3 py-1.5 rounded-full text-xs font-bold bg-white/8 text-white/60 hover:bg-white/15 hover:text-white transition-all"
+            >
+              🎲 Surprise me
+            </button>
             {(
               [
                 ['explore', 'Explore'],
@@ -450,14 +472,29 @@ export default function SnlUniverseExplorer() {
         </div>
       </header>
 
-      {/* Legend */}
-      <div className="absolute bottom-4 left-4 z-10 space-y-1.5 pointer-events-none">
-        {Object.entries(NODE_COLORS).map(([type, color]) => (
-          <div key={type} className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
-            <span className="text-[10px] capitalize text-white/35">{type}</span>
-          </div>
-        ))}
+      {/* Legend — click a type to filter the galaxy */}
+      <div className="absolute bottom-4 left-4 z-10 space-y-0.5">
+        {Object.entries(NODE_COLORS).map(([type, color]) => {
+          const t = type as UniverseNode['type'];
+          const active = typeFilter === t;
+          return (
+            <button
+              key={type}
+              onClick={() => setTypeFilter(active ? null : t)}
+              className={`flex items-center gap-2 rounded-full px-2 py-0.5 transition-colors ${
+                active ? 'bg-white/12' : 'hover:bg-white/6'
+              } ${typeFilter && !active ? 'opacity-40' : ''}`}
+            >
+              <span className="w-2 h-2 rounded-full" style={{ background: color, boxShadow: `0 0 5px ${color}` }} />
+              <span className="text-[10px] capitalize text-white/55">{type}</span>
+            </button>
+          );
+        })}
+        {typeFilter && (
+          <button onClick={() => setTypeFilter(null)} className="text-[9px] text-amber-400/80 hover:text-amber-300 pl-2 pt-1">
+            clear filter ×
+          </button>
+        )}
       </div>
 
       {/* Controls hint */}
