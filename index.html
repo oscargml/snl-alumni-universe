@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SNL Alumni Universe</title>
+
+    <!-- Google Search Console Dynamic Verification -->
+    <script>
+      (function() {
+        const gscToken = "%VITE_GSC_VERIFICATION%" || "";
+        if (gscToken && gscToken !== "" && !gscToken.startsWith("%")) {
+          const meta = document.createElement('meta');
+          meta.name = "google-site-verification";
+          meta.content = gscToken;
+          document.head.appendChild(meta);
+        }
+      })();
+    </script>
+
+    <!-- Google Analytics Dynamic Script Injection -->
+    <script>
+      (function() {
+        const gaId = "%VITE_GA_MEASUREMENT_ID%" || "";
+        if (gaId && gaId !== "" && !gaId.startsWith("%")) {
+          const script = document.createElement('script');
+          script.async = true;
+          script.src = `https://www.googletagmanager.com/gtag/js?id=${gaId}`;
+          document.head.appendChild(script);
+
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          window.gtag = gtag;
+          gtag('js', new Date());
+          gtag('config', gaId);
+        }
+      })();
+    </script>
+
+    <!-- Google AdSense Auto-ads Dynamic Insertion -->
+    <script>
+      (function() {
+        const adClientId = "%VITE_ADSENSE_CLIENT_ID%" || "";
+        if (adClientId && adClientId !== "" && !adClientId.startsWith("%")) {
+          const script = document.createElement('script');
+          script.async = true;
+          script.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${adClientId}`;
+          script.crossOrigin = "anonymous";
+          document.head.appendChild(script);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
