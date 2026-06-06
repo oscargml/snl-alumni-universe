@@ -1,0 +1,6 @@
+{
+  "name": "SNL Alumni Universe",
+  "description": "Interactive relationship mapping, dynamic path finding, timeline eras, and infinite AI trivia of Saturday Night Live cast members and creators.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
